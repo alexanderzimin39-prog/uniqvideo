@@ -10,6 +10,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, FSInputFile, ChatAction
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
+from aiohttp import web
 
 from video_unique import unique_video
 
@@ -172,8 +173,28 @@ async def main():
     # Обработка выбора количества копий
     dp.callback_query.register(on_copies, F.data.startswith("copies:"))
 
+    # Поднимаем простой HTTP-сервер для health-check (Koyeb routing)
+    async def health(_request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "8080"))
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
+
+    logger.info("HTTP health server started on port %s", port)
     logger.info("Bot started")
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # Останавливаем HTTP-сервер аккуратно
+        try:
+            await runner.cleanup()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
