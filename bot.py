@@ -173,6 +173,13 @@ async def main():
     # Обработка выбора количества копий
     dp.callback_query.register(on_copies, F.data.startswith("copies:"))
 
+    # На всякий случай удалим webhook, чтобы точно использовать long polling
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook removed; using long polling")
+    except Exception:
+        logger.warning("Failed to delete webhook; will continue with polling")
+
     # Поднимаем простой HTTP-сервер для health-check (Koyeb routing)
     async def health(_request: web.Request) -> web.Response:
         return web.Response(text="ok")
