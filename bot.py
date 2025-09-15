@@ -7,7 +7,7 @@ from typing import Dict, Tuple, Optional
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, FSInputFile, ChatAction
+from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -72,7 +72,7 @@ async def process_and_send(bot: Bot, chat_id: int, input_path: str, copies: int)
         # Попытаемся отправить по одному файлу
         for p in outputs:
             try:
-                await bot.send_chat_action(chat_id, ChatAction.UPLOAD_VIDEO)
+                await bot.send_chat_action(chat_id, "upload_video")
                 await bot.send_video(chat_id, video=FSInputFile(p))
             except Exception as e:
                 logger.exception("Ошибка отправки файла %s: %s", p, e)
@@ -176,9 +176,12 @@ async def main():
     # Поднимаем простой HTTP-сервер для health-check (Koyeb routing)
     async def health(_request: web.Request) -> web.Response:
         return web.Response(text="ok")
+    async def root(_request: web.Request) -> web.Response:
+        return web.Response(text="ok")
 
     app = web.Application()
     app.router.add_get("/health", health)
+    app.router.add_get("/", root)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "8080"))
