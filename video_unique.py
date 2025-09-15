@@ -20,7 +20,38 @@ def _fit_within_max_dim(width: int, height: int, max_dim: int) -> Tuple[int, int
     return int(width * scale), int(height * scale), scale
 
 
-def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int]:
+def _strength_params(strength: str):
+    s = (strength or "medium").lower()
+    if s == "low":
+        return {
+            "resize": (0.95, 1.05),
+            "speed": (0.98, 1.02),
+            "rotate": (-0.5, 0.5),
+            "density": (0.4, 0.6),
+            "opacity": (0.06, 0.12),
+            "bitrate": (0.9, 1.1),
+        }
+    if s == "high":
+        return {
+            "resize": (0.6, 1.4),
+            "speed": (0.9, 1.1),
+            "rotate": (-4.0, 4.0),
+            "density": (0.6, 0.8),
+            "opacity": (0.15, 0.25),
+            "bitrate": (0.7, 1.3),
+        }
+    # medium (default)
+    return {
+        "resize": (0.7, 1.3),
+        "speed": (0.92, 1.08),
+        "rotate": (-2.0, 2.0),
+        "density": (0.5, 0.7),
+        "opacity": (0.10, 0.18),
+        "bitrate": (0.8, 1.2),
+    }
+
+
+def _unique_once(input_path: str, output_dir: str, index: int, strength: str = "medium") -> Tuple[str, int]:
     """
     Выполняет одну итерацию уникализации видео и возвращает путь к результату и использованный битрейт.
     """
@@ -28,10 +59,11 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
     video = VideoFileClip(input_path)
     audio = AudioFileClip(input_path) if video.audio is None else video.audio
 
-    # 1. Случайные параметры видео (уникальные для каждого файла)
-    resize_factor = np.random.uniform(0.7, 1.3)  # Разрешение 70-130%
-    speed_factor = np.random.uniform(0.92, 1.08)  # Скорость ±8%
-    rotation_angle = np.random.uniform(-2, 2)     # Поворот ±2°
+    # 1. Случайные параметры видео (зависят от силы)
+    P = _strength_params(strength)
+    resize_factor = np.random.uniform(*P["resize"])  # Разрешение
+    speed_factor = np.random.uniform(*P["speed"])    # Скорость
+    rotation_angle = np.random.uniform(*P["rotate"]) # Поворот
 
     video = video.fx(resize, resize_factor)
     video = video.fx(speedx, speed_factor)
@@ -49,13 +81,13 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
         original_bitrate = video.reader.bitrate or 3000
     except Exception:
         original_bitrate = 3000
-    bitrate = int(original_bitrate * np.random.uniform(0.8, 1.2))
+    bitrate = int(original_bitrate * np.random.uniform(*P["bitrate"]))
 
     # 4. Цветовой фильтр (генерим после изменения размера)
     color1 = np.array([0, 0, 0, 0])
     color2 = np.array([1, 1, 1, 1])
     random_color = color1 + np.random.rand(4) * (color2 - color1)
-    density = np.random.uniform(0.5, 0.7)
+    density = np.random.uniform(*P["density"])
     color_filter = ColorClip(
         size=video.size,
         color=(random_color[:3] * 255).astype(int),
@@ -63,7 +95,7 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
     ).set_opacity(density * random_color[3])
 
     # 5. Создаем уникальный элемент (10-18% прозрачности)
-    opacity = np.random.uniform(0.1, 0.18)
+    opacity = np.random.uniform(*P["opacity"])
     element_type = np.random.choice(["rectangle", "noise", "lines", "circle", "gradient"])\
         if min(video.w, video.h) >= 2 else "rectangle"
 
@@ -167,6 +199,7 @@ def unique_video(
     copies: int = 1,
     output_dir: Optional[str] = None,
     progress_cb: Optional[Callable[[int, str], None]] = None,
+    strength: str = "medium",
 ) -> List[str]:
     """
     Генерирует несколько уникальных копий видео.
@@ -188,7 +221,7 @@ def unique_video(
     for i in range(1, copies + 1):
         # Дополнительная энтропия в генераторе
         np.random.seed(None)
-        out_path, _ = _unique_once(input_path, output_dir, i)
+        out_path, _ = _unique_once(input_path, output_dir, i, strength=strength)
         outputs.append(out_path)
         if progress_cb:
             try:

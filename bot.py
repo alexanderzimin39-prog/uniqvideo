@@ -23,9 +23,9 @@ SEM = asyncio.Semaphore(int(os.getenv("WORKERS", "2")))
 # Максимальное число копий за одну задачу
 MAX_COPIES = int(os.getenv("MAX_COPIES", "10"))
 
-# Память для выбора количества копий на пользователя
-# user_id -> (temp_file_path, orig_filename)
-pending_files: Dict[int, Tuple[str, str]] = {}
+# Память для выбора параметров на пользователя
+# user_id -> (temp_file_path, orig_filename, strength)
+pending_files: Dict[int, Tuple[str, str, Optional[str]]] = {}
 
 
 def build_copies_keyboard(max_copies: int = MAX_COPIES):
@@ -34,6 +34,15 @@ def build_copies_keyboard(max_copies: int = MAX_COPIES):
         kb.button(text=f"{i}", callback_data=f"copies:{i}")
     # Раскладываем по рядам по 5 кнопок
     kb.adjust(5)
+    return kb.as_markup()
+
+
+def build_strength_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Низкая", callback_data="strength:low")
+    kb.button(text="Средняя", callback_data="strength:medium")
+    kb.button(text="Высокая", callback_data="strength:high")
+    kb.adjust(3)
     return kb.as_markup()
 
 
@@ -70,16 +79,16 @@ async def download_telegram_file(bot: Bot, message: Message) -> Optional[Tuple[s
         return None
 
 
-async def process_and_send(bot: Bot, chat_id: int, input_path: str, copies: int):
+async def process_and_send(bot: Bot, chat_id: int, input_path: str, copies: int, strength: str = "medium"):
     """Запускает уникализацию в отдельном потоке и отправляет результаты пользователю."""
-    await bot.send_message(chat_id, f"Запускаю обработку… Количество копий: {copies}. Это может занять время.")
+    await bot.send_message(chat_id, f"Запускаю обработку… Сила: {strength}. Количество копий: {copies}. Это может занять время.")
 
     # Выделяем рабочую папку на время задачи
     workdir = tempfile.mkdtemp(prefix="uniq_")
     try:
         async with SEM:
             # MoviePy/ffmpeg — блокирующие операции. Выполним в thread-пуле.
-            outputs = await asyncio.to_thread(unique_video, input_path, copies, workdir)
+            outputs = await asyncio.to_thread(unique_video, input_path, copies, workdir, None, strength)
 
         # Попытаемся отправить по одному файлу
         for p in outputs:
@@ -109,22 +118,27 @@ async def process_and_send(bot: Bot, chat_id: int, input_path: str, copies: int)
 
 async def on_start(message: Message):
     max_mb = int(os.getenv("MAX_FILE_MB", "50"))
+    default_strength = os.getenv("DEFAULT_STRENGTH", "medium").lower()
     text = (
         "Привет! Я уникализирую видео.\n\n"
-        "Пришлите видео в чат (как видео или документ). После этого я попрошу выбрать количество копий.\n"
-        f"Можно выбрать 1–{MAX_COPIES} копий. Максимальный размер файла — {max_mb} МБ."
+        "Пришлите видео в чат (как видео или документ). После этого я попрошу выбрать силу уникализации и количество копий.\n"
+        f"Можно выбрать 1–{MAX_COPIES} копий. Максимальный размер файла — {max_mb} МБ.\n"
+        f"Сила уникализации по умолчанию: {default_strength}."
     )
     await message.answer(text)
 
 
 async def on_help(message: Message):
     max_mb = int(os.getenv("MAX_FILE_MB", "50"))
+    default_strength = os.getenv("DEFAULT_STRENGTH", "medium").lower()
     text = (
         "Как пользоваться:\n"
         "1) Отправьте мне видео или документ с видео.\n"
-        "2) Нажмите на кнопку с количеством копий.\n"
-        "3) Дождитесь готовых файлов.\n\n"
+        "2) Выберите силу уникализации (низкая/средняя/высокая).\n"
+        "3) Выберите количество копий.\n"
+        "4) Дождитесь готовых файлов.\n\n"
         f"Ограничения: максимум {MAX_COPIES} копий за одну задачу, размер файла до {max_mb} МБ.\n"
+        f"Сила по умолчанию: {default_strength}.\n"
         "Команда /start — показать приветствие."
     )
     await message.answer(text)
@@ -136,8 +150,24 @@ async def on_video(message: Message, bot: Bot):
         await message.answer("Пришлите видеофайл (как видео или документ)")
         return
     tmp_path, filename = res
-    pending_files[message.from_user.id] = (tmp_path, filename)
-    await message.answer("Сколько копий создать?", reply_markup=build_copies_keyboard())
+    pending_files[message.from_user.id] = (tmp_path, filename, None)
+    await message.answer("Выберите силу уникализации:", reply_markup=build_strength_keyboard())
+
+
+async def on_strength(callback: CallbackQuery):
+    await callback.answer()
+    data = callback.data or ""
+    if not data.startswith("strength:"):
+        return
+    strength = data.split(":", 1)[1]
+
+    info = pending_files.get(callback.from_user.id)
+    if not info:
+        await callback.message.answer("Не найден загруженный файл. Пришлите видео ещё раз.")
+        return
+    tmp_path, filename, _ = info
+    pending_files[callback.from_user.id] = (tmp_path, filename, strength)
+    await callback.message.answer("Сколько копий создать?", reply_markup=build_copies_keyboard())
 
 
 async def on_copies(callback: CallbackQuery, bot: Bot):
@@ -161,10 +191,12 @@ async def on_copies(callback: CallbackQuery, bot: Bot):
         await callback.message.answer("Не найден загруженный файл. Пришлите видео ещё раз.")
         return
 
-    tmp_path, _ = info
-    await callback.message.answer(f"Принято, создаю {copies} копий…")
+    tmp_path, _, strength = info
+    if not strength:
+        strength = os.getenv("DEFAULT_STRENGTH", "medium").lower()
+    await callback.message.answer(f"Принято, сила: {strength}, создаю {copies} копий…")
     # Запускаем задачу в фоне, чтобы не блокировать обработку бота
-    asyncio.create_task(process_and_send(bot, callback.message.chat.id, tmp_path, copies))
+    asyncio.create_task(process_and_send(bot, callback.message.chat.id, tmp_path, copies, strength))
 
 
 async def main():
@@ -184,7 +216,8 @@ async def main():
     dp.message.register(on_video, F.video)
     dp.message.register(on_video, F.document)
 
-    # Обработка выбора количества копий
+    # Обработка выбора силы и количества копий
+    dp.callback_query.register(on_strength, F.data.startswith("strength:"))
     dp.callback_query.register(on_copies, F.data.startswith("copies:"))
 
     # На всякий случай удалим webhook, чтобы точно использовать long polling
