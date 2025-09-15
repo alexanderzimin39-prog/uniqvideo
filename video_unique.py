@@ -7,6 +7,19 @@ from moviepy.video.fx.all import rotate, resize, speedx
 from moviepy.audio.fx.all import volumex
 
 
+def _fit_within_max_dim(width: int, height: int, max_dim: int) -> Tuple[int, int, float]:
+    """Возвращает новую ширину/высоту и коэффициент масштабирования так, чтобы
+    максимальная сторона не превышала max_dim. Не апскейлит (scale<=1).
+    """
+    if max_dim <= 0:
+        return width, height, 1.0
+    max_side = max(width, height)
+    if max_side <= max_dim:
+        return width, height, 1.0
+    scale = max_dim / float(max_side)
+    return int(width * scale), int(height * scale), scale
+
+
 def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int]:
     """
     Выполняет одну итерацию уникализации видео и возвращает путь к результату и использованный битрейт.
@@ -15,19 +28,7 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
     video = VideoFileClip(input_path)
     audio = AudioFileClip(input_path) if video.audio is None else video.audio
 
-    # 1. Случайный цветовой фильтр (каждый раз разный)
-    color1 = np.array([0, 0, 0, 0])
-    color2 = np.array([1, 1, 1, 1])
-    random_color = color1 + np.random.rand(4) * (color2 - color1)
-    density = np.random.uniform(0.5, 0.7)  # Плотность 50-70%
-
-    color_filter = ColorClip(
-        size=video.size,
-        color=(random_color[:3] * 255).astype(int),
-        duration=video.duration
-    ).set_opacity(density * random_color[3])
-
-    # 2. Случайные параметры видео (уникальные для каждого файла)
+    # 1. Случайные параметры видео (уникальные для каждого файла)
     resize_factor = np.random.uniform(0.7, 1.3)  # Разрешение 70-130%
     speed_factor = np.random.uniform(0.92, 1.08)  # Скорость ±8%
     rotation_angle = np.random.uniform(-2, 2)     # Поворот ±2°
@@ -37,6 +38,12 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
     video = video.fx(rotate, rotation_angle)
     audio = audio.fx(volumex, speed_factor)
 
+    # 2. Ограничим итоговое разрешение под слабые планы (без апскейла)
+    MAX_DIM = int(os.getenv("MAX_DIM", "720"))
+    new_w, new_h, scale_cap = _fit_within_max_dim(video.w, video.h, MAX_DIM)
+    if scale_cap < 1.0:
+        video = video.fx(resize, scale_cap)
+
     # 3. Случайный битрейт (±20%)
     try:
         original_bitrate = video.reader.bitrate or 3000
@@ -44,7 +51,18 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
         original_bitrate = 3000
     bitrate = int(original_bitrate * np.random.uniform(0.8, 1.2))
 
-    # 4. Создаем уникальный элемент (10-18% прозрачности)
+    # 4. Цветовой фильтр (генерим после изменения размера)
+    color1 = np.array([0, 0, 0, 0])
+    color2 = np.array([1, 1, 1, 1])
+    random_color = color1 + np.random.rand(4) * (color2 - color1)
+    density = np.random.uniform(0.5, 0.7)
+    color_filter = ColorClip(
+        size=video.size,
+        color=(random_color[:3] * 255).astype(int),
+        duration=video.duration
+    ).set_opacity(density * random_color[3])
+
+    # 5. Создаем уникальный элемент (10-18% прозрачности)
     opacity = np.random.uniform(0.1, 0.18)
     element_type = np.random.choice(["rectangle", "noise", "lines", "circle", "gradient"])\
         if min(video.w, video.h) >= 2 else "rectangle"
@@ -62,8 +80,12 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
         ))
 
     elif element_type == "noise":
-        noise = np.random.rand(video.h, video.w, 3) * 255
-        element = ImageClip(noise.astype('uint8'), ismask=False, duration=video.duration)
+        # Генерируем шум на пониженной сетке, затем масштабируем — экономит память
+        down = max(1, int(max(video.w, video.h) / 480))  # примерно до ~480p сетки
+        small_w = max(2, video.w // down)
+        small_h = max(2, video.h // down)
+        noise = (np.random.rand(small_h, small_w, 3) * 255).astype("uint8")
+        element = ImageClip(noise, ismask=False, duration=video.duration).resize(video.size)
         element = element.set_opacity(opacity)
 
     elif element_type == "lines":  # Уникальные линии
@@ -90,24 +112,28 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
         element = element.set_opacity(opacity)
 
     else:  # gradient
-        gradient = np.zeros((video.h, video.w, 3), dtype=np.uint8)
-        direction = np.random.choice(["horizontal", "vertical", "diagonal"]) if video.w > 1 and video.h > 1 else "horizontal"
+        # Строим градиент на уменьшенной сетке и масштабируем
+        down = max(1, int(max(video.w, video.h) / 480))
+        small_w = max(2, video.w // down)
+        small_h = max(2, video.h // down)
+        gradient = np.zeros((small_h, small_w, 3), dtype=np.uint8)
+        direction = np.random.choice(["horizontal", "vertical", "diagonal"]) if small_w > 1 and small_h > 1 else "horizontal"
 
         if direction == "horizontal":
-            for x in range(video.w):
-                intensity = int(255 * (x / max(1, video.w)))
+            for x in range(small_w):
+                intensity = int(255 * (x / max(1, small_w)))
                 gradient[:, x] = (intensity, intensity, intensity)
         elif direction == "vertical":
-            for y in range(video.h):
-                intensity = int(255 * (y / max(1, video.h)))
+            for y in range(small_h):
+                intensity = int(255 * (y / max(1, small_h)))
                 gradient[y, :] = (intensity, intensity, intensity)
         else:  # Диагональный
-            for x in range(video.w):
-                for y in range(video.h):
-                    intensity = int(255 * ((x + y) / max(1, (video.w + video.h))))
+            for x in range(small_w):
+                for y in range(small_h):
+                    intensity = int(255 * ((x + y) / max(1, (small_w + small_h))))
                     gradient[y, x] = (intensity, intensity, intensity)
 
-        element = ImageClip(gradient, ismask=False, duration=video.duration)
+        element = ImageClip(gradient, ismask=False, duration=video.duration).resize(video.size)
         element = element.set_opacity(opacity * 0.5)
 
     # Собираем композицию
@@ -119,14 +145,18 @@ def _unique_once(input_path: str, output_dir: str, index: int) -> Tuple[str, int
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, output_name)
 
+    # Параметры кодека из окружения для экономии ресурсов
+    VIDEO_THREADS = int(os.getenv("VIDEO_THREADS", "1"))
+    FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "veryfast")
+
     final_video.write_videofile(
         output_path,
         codec="libx264",
         fps=24,
         audio_codec="aac",
         bitrate=f"{bitrate}k",
-        threads=4,
-        preset='fast'
+        threads=VIDEO_THREADS,
+        preset=FFMPEG_PRESET
     )
 
     return output_path, bitrate

@@ -39,13 +39,25 @@ def build_copies_keyboard(max_copies: int = MAX_COPIES):
 
 async def download_telegram_file(bot: Bot, message: Message) -> Optional[Tuple[str, str]]:
     try:
+        MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "50"))
+        MAX_BYTES = MAX_FILE_MB * 1024 * 1024
+
         if message.video:
             file_id = message.video.file_id
             filename = message.video.file_name or "video.mp4"
+            size = message.video.file_size or 0
         elif message.document and (message.document.mime_type or "").startswith("video/"):
             file_id = message.document.file_id
             filename = message.document.file_name or "video.mp4"
+            size = message.document.file_size or 0
         else:
+            return None
+
+        # Проверка лимита размера файла
+        if size and size > MAX_BYTES:
+            await message.answer(
+                f"Файл слишком большой: {(size/1024/1024):.1f} МБ. Допустимый максимум — {MAX_FILE_MB} МБ."
+            )
             return None
 
         file = await bot.get_file(file_id)
