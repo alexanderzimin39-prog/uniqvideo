@@ -108,21 +108,23 @@ async def process_and_send(bot: Bot, chat_id: int, input_path: str, copies: int)
 
 
 async def on_start(message: Message):
+    max_mb = int(os.getenv("MAX_FILE_MB", "50"))
     text = (
         "Привет! Я уникализирую видео.\n\n"
         "Пришлите видео в чат (как видео или документ). После этого я попрошу выбрать количество копий.\n"
-        f"Можно выбрать 1–{MAX_COPIES} копий."
+        f"Можно выбрать 1–{MAX_COPIES} копий. Максимальный размер файла — {max_mb} МБ."
     )
     await message.answer(text)
 
 
 async def on_help(message: Message):
+    max_mb = int(os.getenv("MAX_FILE_MB", "50"))
     text = (
         "Как пользоваться:\n"
         "1) Отправьте мне видео или документ с видео.\n"
         "2) Нажмите на кнопку с количеством копий.\n"
         "3) Дождитесь готовых файлов.\n\n"
-        f"Ограничение: максимум {MAX_COPIES} копий за одну задачу.\n"
+        f"Ограничения: максимум {MAX_COPIES} копий за одну задачу, размер файла до {max_mb} МБ.\n"
         "Команда /start — показать приветствие."
     )
     await message.answer(text)
